@@ -1,0 +1,13 @@
+# model-service/configs/bert-base.yaml
+deployment: !Deployment
+  destination: aws
+  instance_type: ml.m5.xlarge
+  instance_count: 1
+  num_gpus: null
+  quantization: null
+
+models:
+- !Model
+  id: google-bert/bert-base-uncased
+  source: huggingface
+  task: fill-mask
