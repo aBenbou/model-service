@@ -1,0 +1,15 @@
+deployment: !Deployment
+  destination: aws
+  endpoint_name: gpt2-9f5cdf82-202504211311
+  instance_count: 1
+  instance_type: ml.m5.xlarge
+  num_gpus: null
+  quantization: null
+models:
+- !Model
+  id: gpt2
+  location: null
+  predict: null
+  source: huggingface
+  task: text-generation
+  version: null

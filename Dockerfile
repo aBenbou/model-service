@@ -34,5 +34,5 @@ RUN chmod +x service-setup.sh scripts/setup_role.sh
 # Expose the port
 EXPOSE 8000
 
-# Set the entrypoint - run the server
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
+# Command to run the API
+CMD ["python", "run.py"]

@@ -85,6 +85,12 @@ def get_sagemaker_model_and_task(endpoint_or_model_name: str):
         Dictionary with model_id and task
     """
     components = endpoint_or_model_name.split('-')
+    if len(components) < 2:
+        return {
+            'model_id': endpoint_or_model_name,
+            'task': 'text-generation'  # Default to text-generation if we can't determine task
+        }
+        
     framework, task = components[:2]
     model_id = '-'.join(components[:-1])
     return {
@@ -155,27 +161,43 @@ def get_model_name_from_hugging_face_endpoint(endpoint_name: str):
     Returns:
         Model name
     """
-    endpoint_name = endpoint_name.removeprefix("custom-")
-    endpoint_name = endpoint_name.replace("--", "/")
-    author, rest = endpoint_name.split("/")
+    try:
+        endpoint_name = endpoint_name.removeprefix("custom-")
+        endpoint_name = endpoint_name.replace("--", "/")
+        
+        # Check if we have a valid format with author/model
+        if "/" not in endpoint_name:
+            # Fallback for invalid format: assume it's directly the model name
+            logger.warning(f"Invalid endpoint name format: {endpoint_name}")
+            return endpoint_name
+            
+        author, rest = endpoint_name.split("/")
 
-    # remove datetime
-    split = rest.split('-')
-    fuzzy_model_name = '-'.join(split[:-1])
+        # remove datetime
+        split = rest.split('-')
+        fuzzy_model_name = '-'.join(split[:-1])
 
-    # get first token
-    search_term = fuzzy_model_name.split('-')[0]
+        # get first token
+        search_term = fuzzy_model_name.split('-')[0]
 
-    hf_api = HfApi()
-    results = hf_api.list_models(search=search_term, author=author)
+        hf_api = HfApi()
+        results = hf_api.list_models(search=search_term, author=author)
 
-    # find results that closest match our fuzzy model name
-    results_to_diff = {}
-    for result in results:
-        results_to_diff[result.id] = SequenceMatcher(
-            None, result.id, f"{author}/{fuzzy_model_name}").ratio()
+        # find results that closest match our fuzzy model name
+        results_to_diff = {}
+        for result in results:
+            results_to_diff[result.id] = SequenceMatcher(
+                None, result.id, f"{author}/{fuzzy_model_name}").ratio()
 
-    return max(results_to_diff, key=results_to_diff.get)
+        if not results_to_diff:
+            logger.warning(f"No models found for {author}/{fuzzy_model_name}")
+            return f"{author}/{fuzzy_model_name}"
+            
+        return max(results_to_diff, key=results_to_diff.get)
+    except Exception as e:
+        logger.error(f"Error parsing endpoint name {endpoint_name}: {str(e)}")
+        # Fallback to a reasonable default
+        return endpoint_name
 
 
 def get_text_generation_hyperpameters(config: Optional[Tuple[Deployment, Model]], query: Query = None):

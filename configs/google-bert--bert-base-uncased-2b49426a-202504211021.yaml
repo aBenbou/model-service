@@ -1,0 +1,15 @@
+deployment: !Deployment
+  destination: aws
+  endpoint_name: google-bert--bert-base-uncased-2b49426a-202504211021
+  instance_count: 1
+  instance_type: ml.m5.xlarge
+  num_gpus: null
+  quantization: null
+models:
+- !Model
+  id: google-bert/bert-base-uncased
+  location: null
+  predict: null
+  source: huggingface
+  task: fill-mask
+  version: null
