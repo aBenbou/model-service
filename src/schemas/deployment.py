@@ -1,24 +1,41 @@
 # model-service/src/schemas/deployment.py
 import yaml
 from src.yaml import loader, dumper
-from typing import Optional
-from enum import StrEnum
+from typing import Optional, List, Dict, Any
+from enum import Enum
 from pydantic import BaseModel
 
 
-class Destination(StrEnum):
+class Destination(str, Enum):
     AWS = "aws"
+    LOCAL = "local"
     # AZURE = "azure"
     # GCP = "gcp"
 
 
 class Deployment(BaseModel):
     destination: Destination
+    endpoint_name: str
     instance_type: str
-    endpoint_name: Optional[str] = None
-    instance_count: Optional[int] = 1
+    instance_count: int = 1
     num_gpus: Optional[int] = None
     quantization: Optional[str] = None
+
+
+class DeploymentResponse(BaseModel):
+    deployment_id: str
+    status: str
+    message: str
+    endpoint_name: Optional[str] = None
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
+
+
+class DeploymentList(BaseModel):
+    deployments: List[DeploymentResponse]
+    total: int
+    page: int
+    per_page: int
 
 
 def deployment_representer(dumper: yaml.SafeDumper, deployment: Deployment) -> yaml.nodes.MappingNode:

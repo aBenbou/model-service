@@ -1,5 +1,9 @@
 # model-service/src/sagemaker/__init__.py
-from enum import StrEnum
+from enum import Enum
+
+
+class StrEnum(str, Enum):
+    pass
 
 
 class EC2Instance(StrEnum):

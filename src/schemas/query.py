@@ -1,15 +1,16 @@
 # model-service/src/schemas/query.py
 from pydantic import BaseModel
-from typing import Optional, List, Literal
+from typing import Optional, Dict, Any, List
 
 
 class QueryParameters(BaseModel):
-    max_length: Optional[int] = None
-    max_new_tokens: Optional[int] = None
-    repetition_penalty: Optional[float] = None
     temperature: Optional[float] = None
-    top_k: Optional[float] = None
+    max_tokens: Optional[int] = None
     top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    stop_sequences: Optional[List[str]] = None
+    presence_penalty: Optional[float] = None
+    frequency_penalty: Optional[float] = None
 
 
 class Query(BaseModel):
@@ -18,11 +19,9 @@ class Query(BaseModel):
     parameters: Optional[QueryParameters] = None
 
 
-class ChatMessage(BaseModel):
-    role: Literal["user", "assistant", "function", "system"]
-    content: str
-
-
-class ChatCompletion(BaseModel):
-    model: str
-    messages: List[ChatMessage]
+class QueryResponse(BaseModel):
+    response: str
+    model_id: str
+    endpoint_name: str
+    parameters: Optional[Dict[str, Any]] = None
+    processing_time: Optional[float] = None

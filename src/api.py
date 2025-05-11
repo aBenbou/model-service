@@ -1,5 +1,5 @@
-# model-service/src/api.py
-from fastapi import FastAPI, HTTPException, Request
+
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks 
 from typing import List, Dict, Optional
 import logging
 import json
@@ -14,372 +14,221 @@ from src.config import get_config_for_endpoint, get_deployment_configs
 from src.schemas.model import Model, ModelSource
 from src.schemas.deployment import Deployment, Destination
 from src.sagemaker.create_model import deploy_model
+from src.sagemaker.delete_model import delete_sagemaker_model
+from src.sagemaker.fine_tune_model import fine_tune_model
+from src.session import get_sagemaker_session
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(), logging.FileHandler("model_service.log")]
+)
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+app = FastAPI(
+    title="Model Service API",
+    description="API for managing and deploying AI models",
+    version="1.0.0"
+)
 
-@app.get("/health")
-async def health_check():
-    """Simple health check endpoint."""
-    return {"status": "healthy"}
+# Deployment status tracking
+deployment_status = {}
 
-@app.get("/endpoints")
+# Model Management Endpoints
+@app.post("/models/deploy")
+async def deploy_model_endpoint(
+    background_tasks: BackgroundTasks,
+    model_source: str,
+    model_id: str,
+    instance_type: str = "ml.m5.xlarge",
+    instance_count: int = 1,
+    num_gpus: Optional[int] = None,
+    quantization: Optional[str] = None
+):
+    """Deploy a new model"""
+    try:
+        deployment_id = str(uuid.uuid4())
+        deployment_status[deployment_id] = {
+            "status": "pending",
+            "start_time": time.time(),
+            "message": "Starting deployment"
+        }
+        
+        background_tasks.add_task(
+            deploy_from_params,
+            deployment_id,
+            model_source,
+            model_id,
+            instance_type,
+            instance_count,
+            num_gpus,
+            quantization
+        )
+        
+        return {
+            "deployment_id": deployment_id,
+            "status": "pending",
+            "message": "Deployment started"
+        }
+    except Exception as e:
+        logger.error(f"Failed to start deployment: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/models/deployments/{deployment_id}")
+async def get_deployment_status(deployment_id: str):
+    """Get deployment status"""
+    if deployment_id not in deployment_status:
+        raise HTTPException(status_code=404, detail="Deployment not found")
+    return deployment_status[deployment_id]
+
+@app.get("/models/endpoints")
 async def list_endpoints():
-    """List all available model endpoints."""
+    """List all deployed model endpoints"""
     try:
         endpoints = list_sagemaker_endpoints()
-        # Format endpoint data to match what Interaction Service expects exactly
-        return {
-            "endpoints": [
-                {
-                    "endpointName": endpoint["EndpointName"],
-                    "status": endpoint["EndpointStatus"],
-                    "instanceType": endpoint.get("InstanceType", "unknown"),
-                    "creationTime": str(endpoint.get("CreationTime", ""))
-                } for endpoint in endpoints
-            ]
-        }
+        return {"endpoints": endpoints}
     except Exception as e:
-        logger.error(f"Error listing endpoints: {str(e)}")
-        # Return error in the format Interaction Service expects
-        return {
-            "error": f"Failed to list endpoints: {str(e)}"
-        }
+        logger.error(f"Failed to list endpoints: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/endpoint/{endpoint_name}")
-async def get_endpoint_details(endpoint_name: str):
-    """Get details about a specific endpoint."""
+@app.get("/models/endpoints/{endpoint_name}")
+async def get_endpoint(endpoint_name: str):
+    """Get details of a specific endpoint"""
     try:
-        endpoint_data = get_sagemaker_endpoint(endpoint_name)
-        if endpoint_data is None:
-            # Return 404 in the format Interaction Service expects
-            return {
-                "error": f"Endpoint {endpoint_name} not found"
-            }
-        
-        # Extract model ID from endpoint name
-        model_id = endpoint_name.split('-2')[0]  # Remove timestamp suffix
-        model_id = model_id.replace('--', '-')   # Convert double-dash to single-dash
-        
-        # Format the response to match exactly what the Interaction Service expects
-        return {
-            "models": [
-                {
-                    "id": model_id,
-                    "version": "1.0"
-                }
-            ],
-            "endpointName": endpoint_name,
-            "status": endpoint_data.get('deployment', {}).get('endpointStatus', 'Active')
-        }
+        endpoint = get_sagemaker_endpoint(endpoint_name)
+        if not endpoint:
+            raise HTTPException(status_code=404, detail="Endpoint not found")
+        return endpoint
     except Exception as e:
-        logger.error(f"Error getting endpoint {endpoint_name}: {str(e)}")
-        # Return error in the format Interaction Service expects
-        return {
-            "error": f"Failed to get endpoint details: {str(e)}"
-        }
+        logger.error(f"Failed to get endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/endpoint/{endpoint_name}/query")
-async def query_endpoint(endpoint_name: str, request: Request):
-    """Query a model endpoint."""
-    try:
-        # Parse request body
-        data = await request.json()
-        query_text = data.get("query")
-        if not query_text:
-            return {"error": "'query' field is required"}
-        
-        # Convert parameters format if present
-        parameters = None
-        if data.get("parameters"):
-            parameters = QueryParameters(**data.get("parameters"))
-        
-        # Create Query object
-        query = Query(
-            query=query_text,
-            context=data.get("context"),
-            parameters=parameters
-        )
-        
-        # Get config for this endpoint
-        config_obj = get_config_for_endpoint(endpoint_name)
-        if not config_obj:
-            return {"error": f"Configuration for endpoint {endpoint_name} not found"}
-        
-        # Extract deployment and model from config
-        if not config_obj.models:
-            return {"error": "No models found in the endpoint configuration"}
-            
-        config = (config_obj.deployment, config_obj.models[0])
-        
-        # Make the query
-        result = make_query_request(endpoint_name, query, config)
-        return result
-    except Exception as e:
-        logger.error(f"Error querying endpoint {endpoint_name}: {str(e)}")
-        return {"error": f"Failed to query endpoint: {str(e)}"}
-
-@app.post("/chat/completions")
-async def chat_completion(request: Request):
-    """OpenAI-compatible chat completion endpoint."""
-    try:
-        data = await request.json()
-        model_id = data.get("model")
-        messages = data.get("messages", [])
-        
-        if not model_id or not messages:
-            raise HTTPException(status_code=400, detail="'model' and 'messages' fields are required")
-        
-        # Find the latest user message
-        user_messages = [m for m in messages if m.get("role") == "user"]
-        if not user_messages:
-            raise HTTPException(status_code=400, detail="No user messages found")
-        
-        latest_user_message = user_messages[-1]["content"]
-        
-        # Find configs for this model
-        configs = []
-        for config in get_deployment_configs():
-            for model in config.models:
-                if model.id == model_id:
-                    configs.append((config.deployment, model))
-        
-        if not configs:
-            raise HTTPException(status_code=404, detail=f"Model {model_id} not found")
-        
-        # Use the first config found
-        config = configs[0]
-        
-        # Create a query
-        query = Query(
-            query=latest_user_message,
-            context=json.dumps(messages[:-1])  # Previous messages as context
-        )
-        
-        # Query the model
-        response_text = make_query_request(config[0].endpoint_name, query, config)
-        
-        # If response is a dict with generated text, extract it
-        if isinstance(response_text, dict):
-            if "generated_text" in response_text:
-                response_text = response_text["generated_text"]
-            elif "answer" in response_text:
-                response_text = response_text["answer"]
-            elif "content" in response_text:
-                response_text = response_text["content"]
-        
-        # Return in OpenAI format
-        return {
-            "id": f"chatcmpl-{model_id}",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": model_id,
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": str(response_text)
-                    },
-                    "finish_reason": "stop"
-                }
-            ]
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error in chat completion: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate chat completion: {str(e)}")
-
-class DeploymentRequest(BaseModel):
-    model_source: str
-    model_id: str
-    instance_type: str
-    instance_count: int = 1
-    num_gpus: Optional[int] = None
-    quantization: Optional[str] = None
-
-@app.post("/deploy")
-async def deploy_model_endpoint(request: DeploymentRequest):
-    """Deploy a model to create a new endpoint."""
-    try:
-        # Map the model source string to ModelSource enum
-        model_source_map = {
-            "huggingface": ModelSource.HuggingFace,
-            "sagemaker": ModelSource.Sagemaker,
-            "custom": ModelSource.Custom
-        }
-        
-        if request.model_source.lower() not in model_source_map:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Invalid model_source. Use one of: {', '.join(model_source_map.keys())}"
-            )
-        
-        # Create Model object
-        model = Model(
-            id=request.model_id,
-            source=model_source_map[request.model_source.lower()]
-        )
-        
-        # Create Deployment object with a unique endpoint name
-        endpoint_name = f"{request.model_id.replace('/', '--').replace('_', '-').replace('.', '')[:50]}-{uuid.uuid4().hex[:8]}"
-        
-        deployment = Deployment(
-            destination=Destination.AWS,
-            instance_type=request.instance_type,
-            endpoint_name=endpoint_name,
-            instance_count=request.instance_count,
-            num_gpus=request.num_gpus,
-            quantization=request.quantization
-        )
-        
-        # Deploy the model
-        logger.info(f"Deploying model {request.model_id} to endpoint {endpoint_name}")
-        predictor = deploy_model(deployment, model)
-        
-        # Return deployment info
-        return {
-            "success": True,
-            "endpoint_name": deployment.endpoint_name,
-            "model_id": model.id,
-            "instance_type": deployment.instance_type,
-            "status": "deploying"
-        }
-    except Exception as e:
-        logger.error(f"Error deploying model: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to deploy model: {str(e)}")
-
-@app.delete("/endpoint/{endpoint_name}")
+@app.delete("/models/endpoints/{endpoint_name}")
 async def delete_endpoint(endpoint_name: str):
-    """Delete a deployed endpoint."""
+    """Delete a model endpoint"""
     try:
-        from src.sagemaker.delete_model import delete_sagemaker_model
-        
-        logger.info(f"Deleting endpoint: {endpoint_name}")
         delete_sagemaker_model([endpoint_name])
-        
-        return {"success": True, "message": f"Endpoint {endpoint_name} deletion initiated"}
+        return {"message": f"Endpoint {endpoint_name} deleted successfully"}
     except Exception as e:
-        logger.error(f"Error deleting endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete endpoint: {str(e)}")
+        logger.error(f"Failed to delete endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/models")
-async def list_models(framework: Optional[str] = None):
-    """List available models from HuggingFace or SageMaker."""
+@app.post("/models/query/{endpoint_name}")
+async def query_endpoint(endpoint_name: str, query: Query):
+    """Query a model endpoint"""
     try:
-        from src.sagemaker.search_jumpstart_models import search_sagemaker_jumpstart_model
-        
-        models = search_sagemaker_jumpstart_model(framework)
-        return {"models": models}
-    except Exception as e:
-        logger.error(f"Error listing models: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to list models: {str(e)}")
-
-@app.get("/deploy/{deployment_id}")
-async def get_deployment_status(deployment_id: str):
-    """Get the status of a model deployment."""
-    try:
-        from src.server import deployment_status
-        
-        if deployment_id not in deployment_status:
-            raise HTTPException(status_code=404, detail="Deployment ID not found")
-        
-        return deployment_status[deployment_id]
-    except Exception as e:
-        logger.error(f"Error getting deployment status: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get deployment status: {str(e)}")
-
-@app.get("/models/huggingface")
-async def search_huggingface_models(q: Optional[str] = None):
-    """Search Hugging Face models."""
-    try:
-        # This would implement functionality to search for models on Hugging Face
-        # For now returning a placeholder
-        return {"status": "not_implemented", "message": "HuggingFace model search to be implemented"}
-    except Exception as e:
-        logger.error(f"Error searching HuggingFace models: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to search models: {str(e)}")
-
-@app.get("/models/sagemaker")
-async def list_sagemaker_models(framework: Optional[str] = None):
-    """List SageMaker JumpStart models by framework."""
-    try:
-        from src.sagemaker.search_jumpstart_models import search_sagemaker_jumpstart_model
-        
-        if not framework:
-            framework = "huggingface"  # Default framework
-        
-        models = search_sagemaker_jumpstart_model(framework)
-        
-        return {"status": "success", "models": models}
-    except Exception as e:
-        logger.error(f"Error listing SageMaker models: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to list models: {str(e)}")
-
-@app.get("/config/{endpoint_name}")
-async def get_endpoint_config(endpoint_name: str):
-    """Get the configuration for a deployed endpoint."""
-    try:
-        from src.config import get_config_for_endpoint
-        
         config = get_config_for_endpoint(endpoint_name)
         if not config:
             raise HTTPException(status_code=404, detail="Endpoint configuration not found")
         
-        # Convert the config to a dict for JSON serialization
-        return {
-            "deployment": config.deployment.model_dump(),
-            "models": [model.model_dump() for model in config.models]
-        }
+        response = make_query_request(endpoint_name, query, config)
+        return response
     except Exception as e:
-        logger.error(f"Error getting endpoint configuration: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to get endpoint configuration: {str(e)}")
+        logger.error(f"Failed to query endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# Add compatibility for bulk deletion like in server.py
-class DeleteEndpointRequest(BaseModel):
-    endpoint_names: List[str]
-
-@app.delete("/endpoints")
-async def delete_endpoints(request: DeleteEndpointRequest):
-    """Delete one or more endpoints."""
+@app.post("/models/fine-tune")
+async def fine_tune_endpoint(
+    background_tasks: BackgroundTasks,
+    model_id: str,
+    training_data_path: str,
+    instance_type: str = "ml.m5.xlarge",
+    instance_count: int = 1
+):
+    """Fine-tune a model"""
     try:
-        from src.sagemaker.delete_model import delete_sagemaker_model
+        training_id = str(uuid.uuid4())
+        deployment_status[training_id] = {
+            "status": "pending",
+            "start_time": time.time(),
+            "message": "Starting fine-tuning"
+        }
         
-        delete_sagemaker_model(request.endpoint_names)
+        background_tasks.add_task(
+            fine_tune_model_task,
+            training_id,
+            model_id,
+            training_data_path,
+            instance_type,
+            instance_count
+        )
+        
         return {
-            "status": "success", 
-            "message": f"Deleted endpoints: {request.endpoint_names}"
+            "training_id": training_id,
+            "status": "pending",
+            "message": "Fine-tuning started"
         }
     except Exception as e:
-        logger.error(f"Error deleting endpoints: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete endpoints: {str(e)}")
+        logger.error(f"Failed to start fine-tuning: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/models/validate/{model_id}")
-async def validate_model(model_id: str, model_version: Optional[str] = None):
-    """Validate if a model exists and is deployed."""
+# Helper functions
+async def deploy_from_params(
+    deployment_id: str,
+    model_source: str,
+    model_id: str,
+    instance_type: str,
+    instance_count: int,
+    num_gpus: Optional[int],
+    quantization: Optional[str]
+):
+    """Deploy a model from parameters"""
     try:
-        # Convert model_id to the format used in endpoints
-        model_id_for_comparison = model_id.replace('-', '--')
+        model = Model(
+            id=model_id,
+            source=ModelSource(model_source)
+        )
         
-        # Get all endpoints
-        endpoints = list_sagemaker_endpoints()
+        deployment = Deployment(
+            destination=Destination.AWS,
+            endpoint_name=f"{model_id}-{deployment_id[:8]}",
+            instance_type=instance_type,
+            instance_count=instance_count,
+            num_gpus=num_gpus,
+            quantization=quantization
+        )
         
-        for endpoint in endpoints:
-            endpoint_name = endpoint["EndpointName"]
-            # Check if the endpoint name contains the model ID
-            if model_id_for_comparison in endpoint_name:
-                return {
-                    "valid": True,
-                    "endpoint_name": endpoint_name
-                }
+        predictor = deploy_model(deployment, model)
         
-        # Model not found in any endpoints
-        return {
-            "valid": False,
-            "error": "Model not found in any active endpoints"
-        }
+        deployment_status[deployment_id].update({
+            "status": "completed",
+            "end_time": time.time(),
+            "message": f"Model deployed successfully at endpoint {predictor.endpoint_name}",
+            "endpoint_name": predictor.endpoint_name
+        })
     except Exception as e:
-        logger.error(f"Error validating model {model_id}: {str(e)}")
-        return {"error": f"Failed to validate model: {str(e)}"}
+        logger.error(f"Deployment failed: {str(e)}")
+        deployment_status[deployment_id].update({
+            "status": "failed",
+            "end_time": time.time(),
+            "message": f"Deployment failed: {str(e)}"
+        })
+
+async def fine_tune_model_task(
+    training_id: str,
+    model_id: str,
+    training_data_path: str,
+    instance_type: str,
+    instance_count: int
+):
+    """Fine-tune a model task"""
+    try:
+        # Implementation of fine-tuning logic
+        deployment_status[training_id].update({
+            "status": "completed",
+            "end_time": time.time(),
+            "message": "Fine-tuning completed successfully"
+        })
+    except Exception as e:
+        logger.error(f"Fine-tuning failed: {str(e)}")
+        deployment_status[training_id].update({
+            "status": "failed",
+            "end_time": time.time(),
+            "message": f"Fine-tuning failed: {str(e)}"
+        })
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "version": "1.0.0"}
