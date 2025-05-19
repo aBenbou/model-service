@@ -1,6 +1,10 @@
 # model-service/Dockerfile
-# Use Python 3.10 slim image
-FROM python:3.10-slim
+# Use Python 3.12 slim image
+FROM python:3.12-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
 
 # Set the working directory
 WORKDIR /app
