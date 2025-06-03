@@ -10,10 +10,10 @@ services:
       - ./configs:/app/configs
       - ./models:/app/models
       - ./.env:/app/.env
-    environment:
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_REGION_NAME=${AWS_REGION_NAME:-us-east-1}
+    # Load **all** variables exactly as written in .env
+    # This avoids host / global env values overriding the file
+    env_file:
+      - .env
     restart: unless-stopped
     networks:
       - model-manager-network
