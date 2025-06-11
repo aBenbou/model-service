@@ -138,17 +138,39 @@ async def chat_completion(request: Request):
         
         latest_user_message = user_messages[-1]["content"]
         
+        # Get current endpoints
+        from src.sagemaker.resources import list_sagemaker_endpoints
+        raw_endpoints = list_sagemaker_endpoints()
+        # Format endpoints to match /endpoints endpoint format
+        current_endpoints = [
+            {
+                "endpointName": endpoint["EndpointName"],
+                "status": endpoint["EndpointStatus"],
+                "instanceType": endpoint.get("InstanceType", "unknown"),
+                "creationTime": str(endpoint.get("CreationTime", ""))
+            } for endpoint in raw_endpoints
+        ]
+        
         # Find configs for this model
         configs = []
         for config in get_deployment_configs():
             for model in config.models:
                 if model.id == model_id:
-                    configs.append((config.deployment, model))
+                    # Verify the endpoint exists and is in service
+                    matching_endpoint = next(
+                        (ep for ep in current_endpoints if ep["endpointName"] == config.deployment.endpoint_name),
+                        None
+                    )
+                    if matching_endpoint and matching_endpoint["status"] == "InService":
+                        configs.append((config.deployment, model))
         
         if not configs:
-            raise HTTPException(status_code=404, detail=f"Model {model_id} not found")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Model {model_id} not found or endpoint not in service. Available endpoints: {[ep['endpointName'] for ep in current_endpoints]}"
+            )
         
-        # Use the first config found
+        # Use the first valid config found
         config = configs[0]
         
         # Create a query
