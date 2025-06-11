@@ -42,7 +42,6 @@ yarn-error.log*
 
 # IDE specific files
 .idea/
-.vscode/
 *.swp
 *.swo
 .DS_Store
@@ -70,3 +69,7 @@ datasets/
 *.csv
 *.json
 *.pkl 
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
+.gitignore
